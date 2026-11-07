@@ -1,0 +1,15 @@
+.git
+__pycache__
+*.pyc
+.pytest_cache
+README.md
+train
+train.c
+gen_tables.py
+buckets.py
+check.py
+export.py
+arena.py
+zoo.py
+venv
+.venv
