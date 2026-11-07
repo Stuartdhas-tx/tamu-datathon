@@ -63,12 +63,14 @@ TIME_LIMIT = 6.0             # seconds of our own compute we allow per half
 
 
 def new_half(config: AgentConfig, memory: dict) -> None:
-    """Fresh state for a half."""
-    memory["rng"] = random.Random()
-    memory["key"] = None
-    memory["info"] = None
-    memory["used"] = 0.0
-    memory["num_hands"] = config.num_hands
+    """Initialize independent, observable state for this half."""
+    from opponent import OppStats
+
+    memory.clear()
+    memory.update(rng=random.Random(20261107), key=None, info=None, used=0.0,
+                  num_hands=config.num_hands, faults=0, budget_fallbacks=0,
+                  stats=OppStats(), last_obs=None, last_action=None, last_result=-1,
+                  limit=min(4.5, max(0.0, config.time_bank_seconds * 0.56)))
 
 
 def _street_info(obs: Observation, memory: dict):
@@ -122,20 +124,63 @@ def _decide(obs: Observation, memory: dict) -> Action:
 
 
 def choose_action(obs: Observation, memory: dict) -> Action:
-    """Every path returns a legal action: an error here can never cost a forfeit."""
+    """Use the solver by default, with bounded exploitation of clear extremes."""
     start = time.perf_counter()
+    action = Action.CHECK_CALL
     try:
-        action = _decide(obs, memory)
-        if action not in obs.legal_actions:
-            action = Action.CHECK_CALL
-    except Exception:
-        action = Action.CHECK_CALL
-    memory["used"] = memory.get("used", 0.0) + time.perf_counter() - start
+        if memory["used"] >= memory["limit"]:
+            memory["budget_fallbacks"] += 1
+            strength = memory["info"][1] if memory["key"] == (obs.hand_index, len(obs.board)) else 0.0
+            if not obs.board:
+                strength = float(brain.PF_MU[brain.hand_index(sorted(obs.hole_cards))])
+            need = obs.to_call / max(1, obs.pot + obs.to_call)
+            action = Action.CHECK_CALL if obs.to_call == 0 or strength >= need + .15 else Action.FOLD
+        else:
+            bucket, strength, _ = _street_info(obs, memory)
+            probs = _strategy(obs, bucket)
+            if probs:
+                action = memory["rng"].choices([a for a, p in probs], [p for a, p in probs])[0]
+            else:
+                action = _fallback(obs, strength)
+            stats = memory["stats"]
+            g = int(bool(obs.board))
+            # Extreme profiles require both enough opportunities and strong posterior evidence.
+            passive = stats.free[g] >= 40 and stats.bet_rate(g, .35) < .12
+            sticky = stats.faced[g] >= 40 and stats.fold_rate(g, .3) < .12
+            wild = ((stats.free[g] >= 40 and stats.bet_rate(g, .35) > .80) or
+                    (stats.faced[g] >= 40 and stats.reraise_rate(g, .2) > .75))
+            if (passive and sticky) or wild:
+                need = obs.to_call / max(1, obs.pot + obs.to_call)
+                margin = .02 if wild or obs.opp_stack == 0 or len(obs.board) == 5 else .07
+                action = Action.CHECK_CALL if obs.to_call == 0 or strength >= need + margin else Action.FOLD
+                threshold = (.57 if obs.is_button else .60) if not obs.board else (.62 if passive and sticky else .76)
+                if wild:
+                    threshold = .57 if not obs.board else .65
+                if strength > threshold and Action.RAISE_POT in obs.legal_actions:
+                    action = Action.RAISE_POT
+            if action not in obs.legal_actions:
+                memory["faults"] += 1
+                action = Action.CHECK_CALL if Action.CHECK_CALL in obs.legal_actions else obs.legal_actions[0]
+    except Exception as exc:
+        memory["faults"] += 1
+        memory["last_fault"] = type(exc).__name__ + ": " + str(exc)
+        action = Action.CHECK_CALL if Action.CHECK_CALL in obs.legal_actions else obs.legal_actions[0]
+    memory["used"] += time.perf_counter() - start
+    memory["last_obs"], memory["last_action"] = obs, int(action)
     return action
 
 
 def on_hand_end(result: HandResult, memory: dict) -> None:
-    pass
+    """Learn once from completed hands; showdown cards are not range samples."""
+    if result.hand_index <= memory["last_result"]:
+        return
+    obs = memory["last_obs"]
+    if obs is not None and obs.hand_index != result.hand_index:
+        obs = None
+    memory["stats"].learn(obs, memory["last_action"] if obs is not None else None, result)
+    memory["last_result"] = result.hand_index
+    memory["last_obs"] = None
+    memory["last_action"] = None
 
 # ===== END OF YOUR CODE =====
 
