@@ -154,6 +154,45 @@ class CheckRaiser(Base):
         return C if e >= o.to_call / (o.pot + o.to_call) else F
 
 
+class StreetBluffer(Base):
+    """HELD OUT: raises often on every street with any hand, big bets included."""
+    rate = .45
+    def act(self, o):
+        e = self.strength(o)
+        if self.rng.random() < self.rate:
+            return self.raise_or(o, P if o.street == Street.RIVER else H)
+        if o.to_call == 0:
+            return C
+        return C if e >= o.to_call / (o.pot + o.to_call) else F
+
+
+class RiverHonest(StreetBluffer):
+    """HELD OUT: looks the same as StreetBluffer until the river, where a pot bet
+    always means a strong hand. Overall aggression cannot tell them apart."""
+    def act(self, o):
+        if o.street != Street.RIVER:
+            return super().act(o)
+        e = self.strength(o)
+        if e > .85:
+            return self.raise_or(o, P)
+        if o.to_call == 0:
+            return C
+        return C if e > .7 else F
+
+
+class Switch(Base):
+    """HELD OUT: changes from one style to another partway through a half."""
+    def __init__(self, first, second, at=500):
+        self.first, self.second, self.at = first, second, at
+    def new_half(self, cfg):
+        self.first.new_half(cfg)
+        self.second.new_half(cfg)
+    def act(self, o):
+        return (self.first if o.hand_index < self.at else self.second).act(o)
+    def end(self, r):
+        (self.first if r.hand_index < self.at else self.second).end(r)
+
+
 class CBet(Base):
     """Always continuation bets after raising, gives up when raised."""
     def act(self, o):
@@ -241,6 +280,7 @@ _MADE = {
     "noisy_a": lambda: Noisy(.08, value=.75, half=.6, margin=.08),
     "noisy_b": lambda: Noisy(.12, value=.9, half=.62, margin=-.05, bluff=.3),
     "loosecaller": LooseCaller, "checkraiser": CheckRaiser,
+    "streetbluff": StreetBluffer, "riverhonest": RiverHonest,
     "semibluff": SemiBluff, "mood": Mood, "potcontrol": PotControl,
     "passive": Passive, "maniac": Maniac, "nit": Nit, "trapper": Trapper, "blinder": Blinder, "cbet": CBet,
 }
@@ -272,6 +312,9 @@ def names():
 
 
 def make(name):
+    if name.startswith("switch="):       # switch=first|second|hand
+        first, second, at = name[7:].split("|")
+        return Switch(make(first), make(second), int(at))
     if name.startswith("strat="):
         bits = name[6:].split("@")
         return Strat(bits[0], float(bits[1]) if len(bits) > 1 else .04)

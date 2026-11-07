@@ -153,6 +153,7 @@ AGGRESSIVE = {
     "cbet": cbet_policy, "maniac": maniac_policy, "pot": always_policy(3),
     "half": always_policy(2), "rand": random_policy,
 }
+CALLS = always_policy(1)
 
 TYPES = {
     "basic": dict(value=.8, half=.65), "loose": dict(value=.85, half=.72, margin=-.03),
@@ -170,4 +171,5 @@ if __name__ == "__main__":
     threshold_table(s, value=.65, half=.5, margin=-.05, bluff=.5).tofile(f"{work}/model_lag.bin")
     for name, f in AGGRESSIVE.items():
         rule_table(s, f).tofile(f"{work}/model_{name}.bin")
-    print("models", list(TYPES), list(AGGRESSIVE), "lag")
+    rule_table(s, CALLS).tofile(f"{work}/model_station.bin")
+    print("models", list(TYPES), list(AGGRESSIVE), "lag", "station")
