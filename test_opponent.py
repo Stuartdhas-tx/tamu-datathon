@@ -47,3 +47,29 @@ def test_stats_match_engine_truth():
             # it being visible can differ, so require near-exact agreement.
             assert abs(s.faced[g] - t.faced[g]) <= 0.02 * max(1, t.faced[g]), (s.__dict__, t.__dict__)
             assert abs(s.free[g] - t.free[g]) <= 0.02 * max(1, t.free[g]), (s.__dict__, t.__dict__)
+
+
+def test_opp_decisions_match_engine():
+    """Replayed keys and actions must equal what the engine showed the opponent."""
+    import brain
+    from opponent import opp_decisions
+    rng = random.Random(9)
+    checked = 0
+    for h in range(4000):
+        g = Game(make_deal("d", h), button_seat=h % 2, hand_index=h)
+        truth, last, mine = [], None, None
+        w = rng.choice([.15, .4, .8])
+        while not g.is_terminal:
+            s = g.to_act
+            o = g.observation(s)
+            raises = [a for a in o.legal_actions if a >= 2]
+            a = rng.choice(raises) if raises and rng.random() < w else Action.CHECK_CALL
+            if s == 0:
+                last, mine = o, int(a)
+            else:
+                truth.append((int(o.street), brain.context_key(o), int(a)))
+            g.apply(a)
+        if last is not None and g.result().went_to_showdown:
+            assert opp_decisions(last, mine) == truth, (last, mine, truth)
+            checked += 1
+    assert checked > 3000

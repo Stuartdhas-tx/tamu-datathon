@@ -132,6 +132,28 @@ class Blinder(Base):
         return C if e > .55 else F
 
 
+class LooseCaller(Base):
+    """HELD OUT: bluffs often but also calls wide, so neither counter fits cleanly."""
+    def act(self, o):
+        e = self.strength(o)
+        if e > .75 or (o.to_call == 0 and self.rng.random() < .4):
+            return self.raise_or(o, H)
+        if o.to_call == 0:
+            return C
+        return C if e > .3 else F
+
+
+class CheckRaiser(Base):
+    """HELD OUT: checks then raises as a bluff, the pattern a c-bet counter walks into."""
+    def act(self, o):
+        e = self.strength(o)
+        if o.to_call and (e > .8 or self.rng.random() < .25):
+            return self.raise_or(o, P)
+        if o.to_call == 0:
+            return self.raise_or(o, H) if e > .85 else C
+        return C if e >= o.to_call / (o.pot + o.to_call) else F
+
+
 class CBet(Base):
     """Always continuation bets after raising, gives up when raised."""
     def act(self, o):
@@ -148,6 +170,67 @@ class CBet(Base):
         return C if e > .68 else F
 
 
+class Noisy(Threshold):
+    """HELD OUT: a Monte Carlo bot with few simulations, so its read of its own
+    hand is noisy and its thresholds are not the ones the counters trained on."""
+    def __init__(self, sd=.08, **kw):
+        super().__init__(**kw)
+        self.sd = sd
+    def strength(self, o):
+        k = (o.hand_index, len(o.board))
+        if k != self.key:
+            self.key = k
+            self.eq = brain.street_info(o.hole_cards, o.board, .2)[1] + self.rng.gauss(0, self.sd)
+        return self.eq
+
+
+class SemiBluff(Base):
+    """HELD OUT: raises draws as well as made hands, which an honest-bot counter
+    misreads, and calls down with anything that can improve."""
+    def act(self, o):
+        k = (o.hand_index, len(o.board))
+        if k != self.key:
+            self.key = k
+            self.info = brain.street_info(o.hole_cards, o.board, .5)
+        _, e, nu = self.info
+        draw = o.street in (Street.FLOP, Street.TURN) and nu > .3 and e < .7
+        if (e > .78 or draw) and o.raises_this_street < 2:
+            return self.raise_or(o, P if e > .85 else H)
+        if o.to_call == 0:
+            return C
+        return C if max(e, nu + .25) >= o.to_call / (o.pot + o.to_call) + .05 else F
+
+
+class Mood(Threshold):
+    """HELD OUT: switches style every 150 hands, which a bandit must keep up with."""
+    def __init__(self):
+        super().__init__()
+    def act(self, o):
+        tight = (o.hand_index // 150) % 2 == 0
+        if tight:
+            self.value, self.half, self.margin, self.bluff = .85, .72, .12, 0.
+            return super().act(o)
+        if self.rng.random() < .35:
+            return self.raise_or(o, P)
+        self.value, self.half, self.margin, self.bluff = .65, .5, -.05, .25
+        return super().act(o)
+
+
+class PotControl(Base):
+    """HELD OUT: bets small with medium hands, big only near the nuts, rarely folds
+    to small bets but folds to pot bets without strength."""
+    def act(self, o):
+        e = self.strength(o)
+        if e > .9:
+            return self.raise_or(o, P)
+        if e > .6 and o.to_call == 0:
+            return self.raise_or(o, H)
+        if o.to_call == 0:
+            return C
+        big = o.to_call >= .6 * o.pot
+        return C if e > (.72 if big else .42) else F
+
+
 _MADE = {
     "checkfold": lambda: Fixed(checkfold), "station": lambda: Fixed(station),
     "alwayspot": lambda: Fixed(alwayspot), "alwayshalf": lambda: Fixed(alwayshalf),
@@ -155,6 +238,10 @@ _MADE = {
     "eq_basic": lambda: Threshold(), "eq_loose": lambda: Threshold(.85, .72, -.03),
     "eq_tight": lambda: Threshold(.8, .7, .12), "eq_aggro": lambda: Threshold(.68, .55, .02, .2),
     "eq_shade": lambda: Threshold(.82, .68, .05, .1, .25), "eq_shade2": lambda: Threshold(.86, .72, .02, .15, .35),
+    "noisy_a": lambda: Noisy(.08, value=.75, half=.6, margin=.08),
+    "noisy_b": lambda: Noisy(.12, value=.9, half=.62, margin=-.05, bluff=.3),
+    "loosecaller": LooseCaller, "checkraiser": CheckRaiser,
+    "semibluff": SemiBluff, "mood": Mood, "potcontrol": PotControl,
     "passive": Passive, "maniac": Maniac, "nit": Nit, "trapper": Trapper, "blinder": Blinder, "cbet": CBet,
 }
 
