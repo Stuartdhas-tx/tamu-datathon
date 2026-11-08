@@ -70,3 +70,45 @@ class OppStats:
 
     def reraise_rate(self, g: int, prior_rate: float, weight: float = 25.0) -> float:
         return (self.reraised[g] + prior_rate * weight) / (self.faced[g] + weight)
+
+
+def opp_decisions(obs, my_action: int):
+    """Every decision the opponent made in a hand that reached showdown, as
+    (street, context key, action). obs is our last observation of the hand.
+
+    A context key is built exactly like brain.context_key, from their seat.
+    Their last action can come after our final decision, so it is inferred:
+    a showdown after our raise means they called, and a showdown after we
+    checked first means they checked behind.
+    """
+    me = 0 if obs.is_button else 1
+    them = 1 - me
+    out = []
+    street, seq, aggr, pot, ps = 0, 1, 0, 3, 3
+
+    def key(s):
+        return 1 + ((seq << 20) | (ps << 8) | (s << 4) | (them << 3) | (aggr << 1))
+
+    for a in obs.action_history:
+        s = int(a.street)
+        if s != street:
+            street, seq, ps = s, 1, pot
+        act = int(a.action)
+        if not a.is_me:
+            out.append((s, key(s), act))
+        seq = seq * 4 + act
+        if act >= RAISE:
+            aggr = (me if a.is_me else them) + 1
+        pot += a.amount
+
+    s = int(obs.street)
+    if s != street:
+        seq, ps = 1, pot
+    if my_action >= RAISE:
+        seq = seq * 4 + my_action
+        aggr = me + 1
+        out.append((s, key(s), 1))
+    elif my_action == 1 and obs.to_call == 0 and seq == 1:
+        seq = seq * 4 + 1
+        out.append((s, key(s), 1))
+    return out
