@@ -44,9 +44,12 @@ def play(m, hands=150, seed="bot", raise_rate=.35):
 
 
 def test_all_strategy_files_load(agent):
-    assert len(agent.STRATEGIES) == 3 and agent.EVIDENCE is not None
+    base = agent.STRATEGIES[:agent.MODEL_ARM0]
+    assert all(t is not None for t in base) and agent.EVIDENCE is not None
     for t in agent.STRATEGIES:
-        assert t.shape == agent.STRATEGIES[0].shape
+        assert t is None or t.shape == base[0].shape
+    if agent.MODEL_UNLOCK > 0:      # the per-model counters are in use, so every one must ship
+        assert all(t is not None for t in agent.STRATEGIES[agent.MODEL_ARM0:])
 
 
 def test_plays_with_no_tables_at_all(agent):
@@ -86,7 +89,8 @@ def unlocked_memory(agent, honest, aggressive, balanced, showdowns):
     return mem
 
 
-def test_gate_rules(agent):
+def test_gate_rules(agent, monkeypatch):
+    monkeypatch.setattr(agent, "MODEL_UNLOCK", 0.0)           # the family counters only
     m = unlocked_memory(agent, 100, 0, 0, 10)
     assert agent._open_arms(m) == [0, 1]                   # clearly honest
     m = unlocked_memory(agent, 0, 100, 0, 10)
@@ -101,6 +105,15 @@ def test_gate_rules(agent):
     assert agent._open_arms(m) == [0]                      # balanced fits best
 
 
+def test_model_gate(agent):
+    m = unlocked_memory(agent, 100, 0, 0, 10)
+    assert agent._open_arms(m) == [0, 1, agent.MODEL_ARM0]    # only model 0 fits: its own counter unlocks
+    m["ll_models"][1] = 100 - agent.MODEL_UNLOCK / 2
+    assert agent._open_arms(m) == [0, 1]                   # a second model fits almost as well
+    m = unlocked_memory(agent, 39, 0, 0, 2)
+    assert agent._open_arms(m) == [0]                      # the evidence gate applies too
+
+
 def test_slow_machine_cuts_work_and_stops_optional_evidence(agent):
     mem = {}
     agent.new_half(AgentConfig(num_hands=1000), mem)
@@ -111,6 +124,47 @@ def test_slow_machine_cuts_work_and_stops_optional_evidence(agent):
     assert agent._time_headroom(500, mem) < 1.0
     mem["used"] = 9.9          # past the target: must not crash or go negative in a bad way
     assert agent._work_scale(900, mem) == 0.2
+
+
+def checked_to_on_flop():
+    """An observation on the flop with nothing to call and raises legal."""
+    g = Game(make_deal("adjust", 0), button_seat=0, hand_index=0)
+    while not (len(g.observation(g.to_act).board) == 3 and g.observation(g.to_act).to_call == 0):
+        g.apply(Action.CHECK_CALL)
+    return g.observation(g.to_act)
+
+
+def test_rules_fire_only_against_extremes(agent):
+    mem = {}
+    agent.new_half(AgentConfig(), mem)
+    s = mem["stats"]
+    s.free[1], s.bet[1], s.faced[1], s.folded[1] = 100, 0, 100, 0     # never bets, never folds
+    assert agent._extreme(mem, 1) == (True, False)
+    s.bet[1], s.folded[1] = 35, 30                                     # balanced
+    assert agent._extreme(mem, 1) == (False, False)
+    s.free[1], s.bet[1], s.faced[1], s.folded[1] = 10, 0, 10, 0       # too few chances to judge
+    assert agent._extreme(mem, 1) == (False, False)
+
+
+def test_bluff_only_against_folders(agent):
+    mem = {}
+    agent.new_half(AgentConfig(), mem)
+    o = checked_to_on_flop()
+    assert agent._adjust(o, Action.CHECK_CALL, 0.2, mem) == Action.CHECK_CALL    # no evidence yet
+    mem["stats"].faced[1], mem["stats"].folded[1] = 100, 90
+    assert agent._adjust(o, Action.CHECK_CALL, 0.2, mem) == Action.RAISE_HALF    # weak hand vs a folder
+    assert agent._adjust(o, Action.CHECK_CALL, 0.6, mem) == Action.CHECK_CALL    # not a bluffing hand
+
+
+def test_steal_is_off_by_default(agent, monkeypatch):
+    mem = {}
+    agent.new_half(AgentConfig(), mem)
+    g = Game(make_deal("steal", 0), button_seat=0, hand_index=0)
+    o = g.observation(g.to_act)                     # first in preflop
+    mem["steal"] = [100, 100]                       # they always fold to our pot raises
+    assert agent._adjust(o, Action.CHECK_CALL, 0.3, mem) == Action.CHECK_CALL
+    monkeypatch.setattr(agent, "STEAL", 0.5)
+    assert agent._adjust(o, Action.CHECK_CALL, 0.3, mem) == Action.RAISE_POT
 
 
 def test_one_strategy_per_hand(agent):

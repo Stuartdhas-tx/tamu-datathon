@@ -5,3 +5,6 @@ train
 *.json
 venv/
 .venv/
+practice/work/
+!practice/tables/selector.json
+.DS_Store
